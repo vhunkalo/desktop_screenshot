@@ -1,6 +1,6 @@
 #include "desktop_screenshot_plugin.h"
 
-// This must be included before many other Windows headers.
+// Це має бути перед багатьма іншими Windows-заголовками
 #include <windows.h>
 
 #include <VersionHelpers.h>
@@ -13,13 +13,16 @@
 #include <memory>
 #include <sstream>
 #include <iostream>
+#include <limits>
 
 namespace desktop_screenshot {
 
     HBITMAP CaptureAllMonitors();
     std::vector<BYTE> Hbitmap2PNG(HBITMAP hbitmap);
 
-    // static
+    // ------------------------------------------------------------
+    // Реєстрація плагіна
+    // ------------------------------------------------------------
     void DesktopScreenshotPlugin::RegisterWithRegistrar(
             flutter::PluginRegistrarWindows *registrar) {
         auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -40,6 +43,9 @@ namespace desktop_screenshot {
     DesktopScreenshotPlugin::DesktopScreenshotPlugin() {}
     DesktopScreenshotPlugin::~DesktopScreenshotPlugin() {}
 
+    // ------------------------------------------------------------
+    // Основна логіка
+    // ------------------------------------------------------------
     void DesktopScreenshotPlugin::HandleMethodCall(
             const flutter::MethodCall<flutter::EncodableValue> &method_call,
             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
@@ -72,87 +78,92 @@ namespace desktop_screenshot {
     }
 
     // ------------------------------------------------------------
-    // 🖼 CaptureAllMonitors: створює один bitmap з усіх моніторів
+    // 🖼 CaptureAllMonitors: робить один великий скріншот з усіх моніторів
     // ------------------------------------------------------------
     HBITMAP CaptureAllMonitors() {
-        int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-
-        HDC hdcScreen = CreateDC(TEXT("DISPLAY"), NULL, NULL, NULL);
+        HDC hdcScreen = GetDC(NULL);
         if (!hdcScreen) return nullptr;
 
+        // 1️⃣ Знаходимо межі всіх моніторів (навіть якщо вони ліворуч/зверху/знизу)
+        RECT virtualRect = { LONG_MAX, LONG_MAX, LONG_MIN, LONG_MIN };
+
+        EnumDisplayMonitors(
+                hdcScreen,
+                NULL,
+                [](HMONITOR, HDC, LPRECT lprcMon, LPARAM lParam) -> BOOL {
+                    RECT* vRect = reinterpret_cast<RECT*>(lParam);
+                    if (lprcMon->left < vRect->left) vRect->left = lprcMon->left;
+                    if (lprcMon->top < vRect->top) vRect->top = lprcMon->top;
+                    if (lprcMon->right > vRect->right) vRect->right = lprcMon->right;
+                    if (lprcMon->bottom > vRect->bottom) vRect->bottom = lprcMon->bottom;
+                    return TRUE;
+                },
+                reinterpret_cast<LPARAM>(&virtualRect)
+        );
+
+        int totalWidth = virtualRect.right - virtualRect.left;
+        int totalHeight = virtualRect.bottom - virtualRect.top;
+
+        // 2️⃣ Створюємо сумісний DC і bitmap на весь віртуальний екран
         HDC hdcMemDC = CreateCompatibleDC(hdcScreen);
         if (!hdcMemDC) {
-            DeleteDC(hdcScreen);
+            ReleaseDC(NULL, hdcScreen);
             return nullptr;
         }
 
-        HBITMAP hbitmap = CreateCompatibleBitmap(hdcScreen, width, height);
+        HBITMAP hbitmap = CreateCompatibleBitmap(hdcScreen, totalWidth, totalHeight);
         if (!hbitmap) {
             DeleteDC(hdcMemDC);
-            DeleteDC(hdcScreen);
+            ReleaseDC(NULL, hdcScreen);
             return nullptr;
         }
 
         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMemDC, hbitmap);
 
-        struct MonitorData {
+        // 3️⃣ Обходимо всі монітори й копіюємо їх у правильні місця
+        struct CopyData {
             HDC hdcScreen;
             HDC hdcMemDC;
-            int left;
-            int top;
-        } data = { hdcScreen, hdcMemDC, left, top };
+            RECT virtualRect;
+        } data = { hdcScreen, hdcMemDC, virtualRect };
 
         EnumDisplayMonitors(
                 hdcScreen,
                 NULL,
                 [](HMONITOR hMon, HDC hdcMon, LPRECT lprcMon, LPARAM lParam) -> BOOL {
-                    auto* d = reinterpret_cast<MonitorData*>(lParam);
+                    auto* d = reinterpret_cast<CopyData*>(lParam);
+                    int left = lprcMon->left - d->virtualRect.left;
+                    int top = lprcMon->top - d->virtualRect.top;
+                    int width = lprcMon->right - lprcMon->left;
+                    int height = lprcMon->bottom - lprcMon->top;
 
-                    int monLeft = lprcMon->left;
-                    int monTop = lprcMon->top;
-                    int monWidth = lprcMon->right - lprcMon->left;
-                    int monHeight = lprcMon->bottom - lprcMon->top;
-
-                    HDC monDC = CreateCompatibleDC(d->hdcScreen);
-                    HBITMAP monBmp = CreateCompatibleBitmap(d->hdcScreen, monWidth, monHeight);
-                    HBITMAP oldBmp = (HBITMAP)SelectObject(monDC, monBmp);
-
-                    // Копіюємо конкретний монітор
-                    BitBlt(monDC, 0, 0, monWidth, monHeight, d->hdcScreen, monLeft, monTop, SRCCOPY | CAPTUREBLT);
-
-                    // Вставляємо у загальний bitmap
+                    // Копіюємо з реального екрану у відповідне місце
                     BitBlt(
                             d->hdcMemDC,
-                            monLeft - d->left,
-                            monTop - d->top,
-                            monWidth,
-                            monHeight,
-                            monDC,
-                            0,
-                            0,
-                            SRCCOPY
+                            left,
+                            top,
+                            width,
+                            height,
+                            d->hdcScreen,
+                            lprcMon->left,
+                            lprcMon->top,
+                            SRCCOPY | CAPTUREBLT
                     );
-
-                    SelectObject(monDC, oldBmp);
-                    DeleteObject(monBmp);
-                    DeleteDC(monDC);
                     return TRUE;
                 },
                 reinterpret_cast<LPARAM>(&data)
         );
 
+        // 4️⃣ Очищення
         SelectObject(hdcMemDC, hOldBitmap);
         DeleteDC(hdcMemDC);
-        DeleteDC(hdcScreen);
+        ReleaseDC(NULL, hdcScreen);
 
         return hbitmap;
     }
 
     // ------------------------------------------------------------
-    // 🧩 Hbitmap2PNG: конвертує HBITMAP у PNG-байти
+    // 🧩 Конвертація HBITMAP → PNG
     // ------------------------------------------------------------
     std::vector<BYTE> Hbitmap2PNG(HBITMAP hbitmap) {
         std::vector<BYTE> buf;
