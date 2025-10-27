@@ -81,16 +81,29 @@ namespace desktop_screenshot {
     }
 
     HBITMAP CaptureScreen() {
+        // Встановлюємо DPI Awareness для коректного захоплення
+        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
         // Отримуємо повні координати та розміри віртуального екрану
         int screenLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
         int screenTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int screenWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         int screenHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-        // Отримуємо DC всього екрану
+        // Отримуємо DC екрану з DESKTOPHORZRES/DESKTOPVERTRES для правильного DPI
         HDC hdcScreen = GetDC(NULL);
         if (!hdcScreen) {
             return nullptr;
+        }
+
+        // Отримуємо реальні розміри з урахуванням DPI
+        int realWidth = GetDeviceCaps(hdcScreen, DESKTOPHORZRES);
+        int realHeight = GetDeviceCaps(hdcScreen, DESKTOPVERTRES);
+
+        // Якщо DESKTOPHORZRES повертає 0, використовуємо стандартні метрики
+        if (realWidth == 0 || realHeight == 0) {
+            realWidth = screenWidth;
+            realHeight = screenHeight;
         }
 
         // Створюємо сумісний DC для копіювання
@@ -100,7 +113,7 @@ namespace desktop_screenshot {
             return nullptr;
         }
 
-        // Створюємо bitmap з розміром всього віртуального екрану
+        // Створюємо bitmap з РЕАЛЬНИМИ розмірами
         HBITMAP hbitmap = CreateCompatibleBitmap(hdcScreen, screenWidth, screenHeight);
         if (!hbitmap) {
             DeleteDC(hdcMemDC);
@@ -111,17 +124,22 @@ namespace desktop_screenshot {
         // Вибираємо bitmap в memory DC
         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMemDC, hbitmap);
 
-        // Копіюємо весь віртуальний екран (всі монітори)
-        // ВАЖЛИВО: використовуємо screenLeft і screenTop для правильного захоплення
-        BOOL bltResult = BitBlt(
+        // Встановлюємо режим стретчу
+        SetStretchBltMode(hdcMemDC, HALFTONE);
+        SetBrushOrgEx(hdcMemDC, 0, 0, NULL);
+
+        // Використовуємо StretchBlt замість BitBlt для правильного DPI scaling
+        BOOL bltResult = StretchBlt(
                 hdcMemDC,           // destination DC
                 0, 0,               // destination coordinates
-                screenWidth,        // width
-                screenHeight,       // height
+                screenWidth,        // destination width
+                screenHeight,       // destination height
                 hdcScreen,          // source DC
-                screenLeft,         // source X (може бути від'ємним!)
-                screenTop,          // source Y (може бути від'ємним!)
-                SRCCOPY | CAPTUREBLT  // додали CAPTUREBLT для кращого захоплення
+                screenLeft,         // source X
+                screenTop,          // source Y
+                screenWidth,        // source width
+                screenHeight,       // source height
+                SRCCOPY | CAPTUREBLT
         );
 
         if (!bltResult) {
@@ -162,8 +180,6 @@ namespace desktop_screenshot {
     }
 
 }  // namespace desktop_screenshot
-
-
 //#include "desktop_screenshot_plugin.h"
 //
 //// This must be included before many other Windows headers.
