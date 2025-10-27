@@ -81,79 +81,55 @@ namespace desktop_screenshot {
     }
 
     HBITMAP CaptureScreen() {
-        // Встановлюємо DPI Awareness для коректного захоплення
-        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        // Отримуємо bounds віртуального екрану
+        int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-        // Отримуємо повні координати та розміри віртуального екрану
-        int screenLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        int screenTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        int screenWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        int screenHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-
-        // Отримуємо DC екрану з DESKTOPHORZRES/DESKTOPVERTRES для правильного DPI
-        HDC hdcScreen = GetDC(NULL);
+        // Створюємо DC для екрану
+        HDC hdcScreen = CreateDC(TEXT("DISPLAY"), NULL, NULL, NULL);
         if (!hdcScreen) {
             return nullptr;
         }
 
-        // Отримуємо реальні розміри з урахуванням DPI
-        int realWidth = GetDeviceCaps(hdcScreen, DESKTOPHORZRES);
-        int realHeight = GetDeviceCaps(hdcScreen, DESKTOPVERTRES);
-
-        // Якщо DESKTOPHORZRES повертає 0, використовуємо стандартні метрики
-        if (realWidth == 0 || realHeight == 0) {
-            realWidth = screenWidth;
-            realHeight = screenHeight;
-        }
-
-        // Створюємо сумісний DC для копіювання
+        // Створюємо сумісний DC
         HDC hdcMemDC = CreateCompatibleDC(hdcScreen);
         if (!hdcMemDC) {
-            ReleaseDC(NULL, hdcScreen);
+            DeleteDC(hdcScreen);
             return nullptr;
         }
 
-        // Створюємо bitmap з РЕАЛЬНИМИ розмірами
-        HBITMAP hbitmap = CreateCompatibleBitmap(hdcScreen, screenWidth, screenHeight);
+        // Створюємо bitmap
+        HBITMAP hbitmap = CreateCompatibleBitmap(hdcScreen, width, height);
         if (!hbitmap) {
             DeleteDC(hdcMemDC);
-            ReleaseDC(NULL, hdcScreen);
+            DeleteDC(hdcScreen);
             return nullptr;
         }
 
-        // Вибираємо bitmap в memory DC
+        // Вибираємо bitmap
         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMemDC, hbitmap);
 
-        // Встановлюємо режим стретчу
-        SetStretchBltMode(hdcMemDC, HALFTONE);
-        SetBrushOrgEx(hdcMemDC, 0, 0, NULL);
-
-        // Використовуємо StretchBlt замість BitBlt для правильного DPI scaling
-        BOOL bltResult = StretchBlt(
-                hdcMemDC,           // destination DC
-                0, 0,               // destination coordinates
-                screenWidth,        // destination width
-                screenHeight,       // destination height
-                hdcScreen,          // source DC
-                screenLeft,         // source X
-                screenTop,          // source Y
-                screenWidth,        // source width
-                screenHeight,       // source height
+        // Копіюємо екран
+        BOOL success = BitBlt(
+                hdcMemDC,
+                0, 0,
+                width, height,
+                hdcScreen,
+                left, top,
                 SRCCOPY | CAPTUREBLT
         );
 
-        if (!bltResult) {
-            SelectObject(hdcMemDC, hOldBitmap);
-            DeleteObject(hbitmap);
-            DeleteDC(hdcMemDC);
-            ReleaseDC(NULL, hdcScreen);
-            return nullptr;
-        }
-
-        // Відновлюємо старий bitmap і очищаємо ресурси
+        // Очищаємо
         SelectObject(hdcMemDC, hOldBitmap);
         DeleteDC(hdcMemDC);
-        ReleaseDC(NULL, hdcScreen);
+        DeleteDC(hdcScreen);
+
+        if (!success) {
+            DeleteObject(hbitmap);
+            return nullptr;
+        }
 
         return hbitmap;
     }
