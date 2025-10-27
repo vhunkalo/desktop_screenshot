@@ -114,10 +114,10 @@ namespace desktop_screenshot {
         // Копіюємо екран
         BOOL success = BitBlt(
                 hdcMemDC,
-                0, 0,
+                -left, -top,     // 👈 тут зміна: компенсуємо від’ємні координати
                 width, height,
                 hdcScreen,
-                left, top,
+                0, 0,            // 👈 копіюємо від (0,0) екрана
                 SRCCOPY | CAPTUREBLT
         );
 
