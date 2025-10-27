@@ -3,39 +3,29 @@
 // This must be included before many other Windows headers.
 #include <windows.h>
 
-// For getPlatformVersion; remove unless needed for your plugin implementation.
 #include <VersionHelpers.h>
-
 #include <flutter/method_channel.h>
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 
 #include <atlimage.h>
-#include <codecvt>
-#include <map>
-
-#include <cstdint>
-
-#include <iostream>
 #include <vector>
-#include <fstream>
-
 #include <memory>
 #include <sstream>
+#include <iostream>
 
 namespace desktop_screenshot {
 
-    HBITMAP CaptureScreen();
-
+    HBITMAP CaptureAllMonitors();
     std::vector<BYTE> Hbitmap2PNG(HBITMAP hbitmap);
 
-// static
+    // static
     void DesktopScreenshotPlugin::RegisterWithRegistrar(
             flutter::PluginRegistrarWindows *registrar) {
-        auto channel =
-                std::make_unique < flutter::MethodChannel < flutter::EncodableValue >> (
-                        registrar->messenger(), "desktop_screenshot",
-                                &flutter::StandardMethodCodec::GetInstance());
+        auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+                registrar->messenger(),
+                        "desktop_screenshot",
+                        &flutter::StandardMethodCodec::GetInstance());
 
         auto plugin = std::make_unique<DesktopScreenshotPlugin>();
 
@@ -48,12 +38,12 @@ namespace desktop_screenshot {
     }
 
     DesktopScreenshotPlugin::DesktopScreenshotPlugin() {}
-
     DesktopScreenshotPlugin::~DesktopScreenshotPlugin() {}
 
     void DesktopScreenshotPlugin::HandleMethodCall(
-            const flutter::MethodCall <flutter::EncodableValue> &method_call,
-            std::unique_ptr <flutter::MethodResult<flutter::EncodableValue>> result) {
+            const flutter::MethodCall<flutter::EncodableValue> &method_call,
+            std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+
         if (method_call.method_name().compare("getPlatformVersion") == 0) {
             std::ostringstream version_stream;
             version_stream << "Windows ";
@@ -65,42 +55,40 @@ namespace desktop_screenshot {
                 version_stream << "7";
             }
             result->Success(flutter::EncodableValue(version_stream.str()));
+
         } else if (method_call.method_name().compare("getScreenshot") == 0) {
-            HBITMAP bitmap = CaptureScreen();
+            HBITMAP bitmap = CaptureAllMonitors();
             if (bitmap) {
                 std::vector<BYTE> pngBuf = Hbitmap2PNG(bitmap);
                 result->Success(flutter::EncodableValue(pngBuf));
-                pngBuf.clear();
                 DeleteObject(bitmap);
             } else {
                 result->Error("INVALID_IMAGE_DATA", "Failed to capture valid image data");
             }
+
         } else {
             result->NotImplemented();
         }
     }
 
-    HBITMAP CaptureScreen() {
-        // Отримуємо bounds віртуального екрану
+    // ------------------------------------------------------------
+    // 🖼 CaptureAllMonitors: створює один bitmap з усіх моніторів
+    // ------------------------------------------------------------
+    HBITMAP CaptureAllMonitors() {
         int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
         int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-        // Створюємо DC для екрану
         HDC hdcScreen = CreateDC(TEXT("DISPLAY"), NULL, NULL, NULL);
-        if (!hdcScreen) {
-            return nullptr;
-        }
+        if (!hdcScreen) return nullptr;
 
-        // Створюємо сумісний DC
         HDC hdcMemDC = CreateCompatibleDC(hdcScreen);
         if (!hdcMemDC) {
             DeleteDC(hdcScreen);
             return nullptr;
         }
 
-        // Створюємо bitmap
         HBITMAP hbitmap = CreateCompatibleBitmap(hdcScreen, width, height);
         if (!hbitmap) {
             DeleteDC(hdcMemDC);
@@ -108,32 +96,64 @@ namespace desktop_screenshot {
             return nullptr;
         }
 
-        // Вибираємо bitmap
         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMemDC, hbitmap);
 
-        // Копіюємо екран
-        BOOL success = BitBlt(
-                hdcMemDC,
-                -left, -top,     // 👈 тут зміна: компенсуємо від’ємні координати
-                width, height,
+        struct MonitorData {
+            HDC hdcScreen;
+            HDC hdcMemDC;
+            int left;
+            int top;
+        } data = { hdcScreen, hdcMemDC, left, top };
+
+        EnumDisplayMonitors(
                 hdcScreen,
-                0, 0,            // 👈 копіюємо від (0,0) екрана
-                SRCCOPY | CAPTUREBLT
+                NULL,
+                [](HMONITOR hMon, HDC hdcMon, LPRECT lprcMon, LPARAM lParam) -> BOOL {
+                    auto* d = reinterpret_cast<MonitorData*>(lParam);
+
+                    int monLeft = lprcMon->left;
+                    int monTop = lprcMon->top;
+                    int monWidth = lprcMon->right - lprcMon->left;
+                    int monHeight = lprcMon->bottom - lprcMon->top;
+
+                    HDC monDC = CreateCompatibleDC(d->hdcScreen);
+                    HBITMAP monBmp = CreateCompatibleBitmap(d->hdcScreen, monWidth, monHeight);
+                    HBITMAP oldBmp = (HBITMAP)SelectObject(monDC, monBmp);
+
+                    // Копіюємо конкретний монітор
+                    BitBlt(monDC, 0, 0, monWidth, monHeight, d->hdcScreen, monLeft, monTop, SRCCOPY | CAPTUREBLT);
+
+                    // Вставляємо у загальний bitmap
+                    BitBlt(
+                            d->hdcMemDC,
+                            monLeft - d->left,
+                            monTop - d->top,
+                            monWidth,
+                            monHeight,
+                            monDC,
+                            0,
+                            0,
+                            SRCCOPY
+                    );
+
+                    SelectObject(monDC, oldBmp);
+                    DeleteObject(monBmp);
+                    DeleteDC(monDC);
+                    return TRUE;
+                },
+                reinterpret_cast<LPARAM>(&data)
         );
 
-        // Очищаємо
         SelectObject(hdcMemDC, hOldBitmap);
         DeleteDC(hdcMemDC);
         DeleteDC(hdcScreen);
 
-        if (!success) {
-            DeleteObject(hbitmap);
-            return nullptr;
-        }
-
         return hbitmap;
     }
 
+    // ------------------------------------------------------------
+    // 🧩 Hbitmap2PNG: конвертує HBITMAP у PNG-байти
+    // ------------------------------------------------------------
     std::vector<BYTE> Hbitmap2PNG(HBITMAP hbitmap) {
         std::vector<BYTE> buf;
         if (hbitmap != NULL) {
@@ -142,7 +162,6 @@ namespace desktop_screenshot {
             CImage image;
             ULARGE_INTEGER liSize;
 
-            // screenshot to png and save to stream
             image.Attach(hbitmap);
             image.Save(stream, Gdiplus::ImageFormatPNG);
             IStream_Size(stream, &liSize);
