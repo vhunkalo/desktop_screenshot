@@ -84,9 +84,8 @@ namespace desktop_screenshot {
         HDC hdcScreen = GetDC(NULL);
         if (!hdcScreen) return nullptr;
 
-        // 1️⃣ Знаходимо межі всіх моніторів (навіть якщо вони ліворуч/зверху/знизу)
+        // 1️⃣ Знаходимо повну віртуальну область усіх моніторів
         RECT virtualRect = { LONG_MAX, LONG_MAX, LONG_MIN, LONG_MIN };
-
         EnumDisplayMonitors(
                 hdcScreen,
                 NULL,
@@ -104,7 +103,7 @@ namespace desktop_screenshot {
         int totalWidth = virtualRect.right - virtualRect.left;
         int totalHeight = virtualRect.bottom - virtualRect.top;
 
-        // 2️⃣ Створюємо сумісний DC і bitmap на весь віртуальний екран
+        // 2️⃣ Створюємо bitmap на весь віртуальний екран
         HDC hdcMemDC = CreateCompatibleDC(hdcScreen);
         if (!hdcMemDC) {
             ReleaseDC(NULL, hdcScreen);
@@ -120,7 +119,7 @@ namespace desktop_screenshot {
 
         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMemDC, hbitmap);
 
-        // 3️⃣ Обходимо всі монітори й копіюємо їх у правильні місця
+        // 3️⃣ Обходимо всі монітори та копіюємо з урахуванням від’ємних координат
         struct CopyData {
             HDC hdcScreen;
             HDC hdcMemDC;
@@ -130,18 +129,21 @@ namespace desktop_screenshot {
         EnumDisplayMonitors(
                 hdcScreen,
                 NULL,
-                [](HMONITOR hMon, HDC hdcMon, LPRECT lprcMon, LPARAM lParam) -> BOOL {
+                [](HMONITOR, HDC, LPRECT lprcMon, LPARAM lParam) -> BOOL {
                     auto* d = reinterpret_cast<CopyData*>(lParam);
-                    int left = lprcMon->left - d->virtualRect.left;
-                    int top = lprcMon->top - d->virtualRect.top;
+
                     int width = lprcMon->right - lprcMon->left;
                     int height = lprcMon->bottom - lprcMon->top;
 
-                    // Копіюємо з реального екрану у відповідне місце
+                    // 🧠 ключовий момент — зсув джерела
+                    int destX = lprcMon->left - d->virtualRect.left;
+                    int destY = lprcMon->top - d->virtualRect.top;
+
+                    // якщо top > 0 (монітор знизу), BitBlt бере не з (0,0), а з global (left, top)
                     BitBlt(
                             d->hdcMemDC,
-                            left,
-                            top,
+                            destX,
+                            destY,
                             width,
                             height,
                             d->hdcScreen,
@@ -149,6 +151,7 @@ namespace desktop_screenshot {
                             lprcMon->top,
                             SRCCOPY | CAPTUREBLT
                     );
+
                     return TRUE;
                 },
                 reinterpret_cast<LPARAM>(&data)
